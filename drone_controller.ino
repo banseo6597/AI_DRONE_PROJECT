@@ -136,51 +136,57 @@ void setup() {
 }
 
 // ==========================================
-// ★★★ 하이브리드 제어 + 자율 호버링 무한 루프 ★★★
+// ★★★ 통신 강화 패치가 적용된 무한 루프 ★★★
 void loop() { 
   if(startDroneControl()) {
     
-    // 1. 조이스틱(수동) 입력값 먼저 확인
+    // 1. 조이스틱(수동) 입력값 및 비상버튼 확인
     checkThrottle();
     checkRoll();
     checkPitch();
     checkYaw();
     checkEmergency();
     
-    // 2. 비상정지(SW25) 핀 작동 시 AI 캐시 강제 포맷 (안전 최우선)
     if (option == 0x000e) {
       ai_pitch = 0; ai_roll = 0; ai_throttle = 0; ai_command_timestamp = 0; 
     }
     
-    // 3. 수동 오버라이드 조건 (방향키 또는 고도키 터치 시 발동)
     bool isManualOverride = (roll != 0 || pitch != 0 || yaw != 0 || !digitalRead(5) || !digitalRead(6));
 
-    // 4. 파이썬(AI)으로부터 들어온 명령 수신 (< > 프레이밍)
+    // 2. 🚀 USB 통신 쪼개짐 방지 (강화된 프레이밍 수신부)
     if (Serial.available() > 0) {
       char startChar = Serial.read();
       if (startChar == '<') {
-        delay(5); 
-        char aiCommand = Serial.read();
-        char endChar = Serial.read();
+        
+        // 나머지 2글자(예: U와 >)가 도착할 때까지 최대 50ms 기다림
+        unsigned long waitTime = millis();
+        while(Serial.available() < 2 && (millis() - waitTime) < 50) { 
+          // 무한 대기 방지
+        }
 
-        if (endChar == '>') {
-          ai_command_timestamp = millis(); 
+        if (Serial.available() >= 2) {
+          char aiCommand = Serial.read();
+          char endChar = Serial.read();
 
-          if (aiCommand == 'F') { 
-            ai_pitch = 80; ai_roll = 0; 
-          } 
-          else if (aiCommand == 'S') { 
-            ai_pitch = 0; ai_roll = 0; 
-          }
-          else if (aiCommand == 'U') { 
-            ai_pitch = 0; ai_roll = 0;
-            ai_throttle = 80;  // 자율 호버링 기본 고도
+          if (endChar == '>') {
+            ai_command_timestamp = millis(); 
+
+            if (aiCommand == 'F') { 
+              ai_pitch = 80; ai_roll = 0; 
+            } 
+            else if (aiCommand == 'S') { 
+              ai_pitch = 0; ai_roll = 0; 
+            }
+            else if (aiCommand == 'U') { 
+              ai_pitch = 0; ai_roll = 0;
+              ai_throttle = 100;  // 고도를 80에서 100으로 올려서 힘을 키움!
+            }
           }
         }
       }
     }
 
-    // 5. 권한 중재 및 Watchdog 로직
+    // 3. 권한 중재 및 Watchdog 로직
     if (isManualOverride) {
       ai_pitch = 0; ai_roll = 0; ai_throttle = 0;
     } else {
@@ -195,8 +201,9 @@ void loop() {
       }
     }
 
-    // 6. 무선 전송
+    // 4. 무선 전송
     checkCRC();
     sendDroneCommand();
   }
 }
+
