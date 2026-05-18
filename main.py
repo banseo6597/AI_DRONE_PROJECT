@@ -43,14 +43,17 @@ def analyze_and_execute(text):
     if any(word in text for word in CMD_FORWARD):
         print(">> 🚀 액션: 전진 (<F>)")
         arduino.write(b'<F>')
+        arduino.flush()
         
     elif any(word in text for word in CMD_STOP):
         print(">> 🛑 액션: 정지 (<S>)")
         arduino.write(b'<S>')
+        arduino.flush()
         
     elif any(word in text for word in CMD_TAKEOFF):
         print(">> 🚁 액션: 이륙 (<U>)")
         arduino.write(b'<U>')
+        arduino.flush()
         
     elif any(word in text for word in CMD_LIGHT_ON):
         print(">> 💡 액션: 불 켜 (O)")
