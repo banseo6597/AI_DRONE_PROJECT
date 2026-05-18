@@ -1,17 +1,146 @@
-// [전역 변수 확인] 맨 위에 이 변수들이 있는지 꼭 확인해 주세요!
-// unsigned long ai_command_timestamp = 0;
-// const unsigned long AI_COMMAND_TIMEOUT_MS = 2000;
-// int ai_pitch = 0;
-// int ai_roll = 0;
-// int ai_throttle = 0; 
+//-----------------------------------------------------
+#include <SoftwareSerial.h>
 
-// ... (setup 및 check 함수들 유지) ...
+SoftwareSerial bleSerial(A0, A1); // RX, TX (조종기 쉴드 블루투스 핀)
+
+//==== 드론 제어에 필요한 기본 변수 선언 ====
+unsigned char startBit_1 = 0x26;
+unsigned char startBit_2 = 0xa8;
+unsigned char startBit_3 = 0x14;
+unsigned char startBit_4 = 0xb1;
+unsigned char len = 0x14;
+unsigned char checkSum = 0;
+
+int roll = 0;
+int pitch = 0;
+int yaw = 0;
+int throttle = 0;
+int option = 0x000f;
+
+int p_vel = 0x0064;
+int y_vel = 0x0064;
+unsigned char drone_action = 0;
+unsigned char payload[14];
+unsigned int firstRoll;
+unsigned int firstPitch;
 
 // ==========================================
+// ★ AI 하이브리드 제어 및 안전망(Watchdog) 변수
+unsigned long ai_command_timestamp = 0;
+const unsigned long AI_COMMAND_TIMEOUT_MS = 2000; // 2초 타임아웃
+int ai_pitch = 0;
+int ai_roll = 0;
+int ai_throttle = 0;
+// ==========================================
+
+//-----------------------------------------------------
+
+void checkThrottle() {
+  if(!digitalRead(6)) { if(throttle > 9) throttle -= 10; } // 하강
+  else if(!digitalRead(5)) { if(throttle < 141) throttle += 20; } // 상승
+}
+
+void checkYaw() {
+  if(throttle == 0) yaw = 0;
+  if(!digitalRead(7)) { if(yaw > -170) yaw -= 10; } // 좌회전
+  else if(!digitalRead(8)) { if(yaw < 170) yaw += 10; } // 우회전
+}
+
+void checkEmergency() {
+  if(!digitalRead(9)) {
+    roll = 0; pitch = 0; yaw = 0; throttle = 0; option = 0x000e;
+  } else { option = 0x000f; }
+}
+
+void checkRoll() {
+  unsigned int secondRoll = analogRead(4);
+  if(secondRoll < firstRoll - 450) roll = -200;
+  else if(secondRoll < firstRoll - 350) roll = -160;
+  else if(secondRoll < firstRoll - 250) roll = -120;
+  else if(secondRoll < firstRoll - 150) roll = -80;
+  else if(secondRoll < firstRoll - 50) roll = -40;
+  else if(secondRoll < firstRoll + 50) roll = 0; // 데드존 (중앙)
+  else if(secondRoll < firstRoll + 150) roll = 40;
+  else if(secondRoll < firstRoll + 250) roll = 80;
+  else if(secondRoll < firstRoll + 350) roll = 120;
+  else if(secondRoll < firstRoll + 450) roll = 160;
+  else roll = 200;
+}
+
+void checkPitch() {
+  unsigned int secondPitch = analogRead(5);
+  if(secondPitch < firstPitch - 450) pitch = -200;
+  else if(secondPitch < firstPitch - 350) pitch = -160;
+  else if(secondPitch < firstPitch - 250) pitch = -120;
+  else if(secondPitch < firstPitch - 150) pitch = -80;
+  else if(secondPitch < firstPitch - 50) pitch = -40;
+  else if(secondPitch < firstPitch + 50) pitch = 0; // 데드존 (중앙)
+  else if(secondPitch < firstPitch + 150) pitch = 40;
+  else if(secondPitch < firstPitch + 250) pitch = 80;
+  else if(secondPitch < firstPitch + 350) pitch = 120;
+  else if(secondPitch < firstPitch + 450) pitch = 160;
+  else pitch = 200;
+}
+
+void sendDroneCommand() {
+  bleSerial.print("at+writeh000d");
+  bleSerial.print(String(startBit_1, HEX)); bleSerial.print(String(startBit_2, HEX));
+  bleSerial.print(String(startBit_3, HEX)); bleSerial.print(String(startBit_4, HEX));
+  bleSerial.print(String(len, HEX));
+  
+  if(checkSum < 0x10) bleSerial.print("0" + String(checkSum, HEX));
+  else bleSerial.print(String(checkSum, HEX));
+
+  for(int i=0; i<14; i++) {
+    if(payload[i] < 0x10) bleSerial.print("0" + String(payload[i], HEX));
+    else bleSerial.print(String(payload[i], HEX));
+  }
+  bleSerial.print("\r");
+  delay(50);
+}
+
+void checkCRC() {
+  memset(payload, 0x00, 14);
+  payload[0] = (roll) & 0x00ff; payload[1] = (roll >> 8) & 0x00ff;
+  payload[2] = (pitch) & 0x00ff; payload[3] = (pitch >> 8) & 0x00ff;
+  payload[4] = (yaw) & 0x00ff; payload[5] = (yaw >> 8) & 0x00ff;
+  payload[6] = (throttle) & 0x00ff; payload[7] = (throttle >> 8) & 0x00ff;
+  payload[8] = (option) & 0x00ff; payload[9] = (option >> 8) & 0x00ff;
+  payload[10] = (p_vel) & 0x00ff; payload[11] = (p_vel >> 8) & 0x00ff;
+  payload[12] = (y_vel) & 0x00ff; payload[13] = (y_vel >> 8) & 0x00ff;
+  
+  checkSum = 0;
+  for(int i = 0; i < 14; i++) checkSum += payload[i];
+  checkSum = checkSum & 0x00ff;
+}
+
+unsigned char startDroneControl() {
+   // 비상/시작 버튼(9번 핀)을 눌러야 시작됨
+   if(!digitalRead(9)) {
+     firstRoll = analogRead(4);
+     firstPitch = analogRead(5);
+     drone_action = 1;
+   }
+   return drone_action;
+}
+
+void setup() {
+  Serial.begin(9600); // 라즈베리파이와 통신할 속도
+  bleSerial.begin(9600); // 블루투스 통신 속도
+
+  for(int i = 5; i < 11; i++) {
+    pinMode(i, INPUT);
+    digitalWrite(i, HIGH); // 내부 풀업 저항 활성화
+  }
+  delay(500);
+}
+
+// ==========================================
+// ★★★ 하이브리드 제어 + 자율 호버링 무한 루프 ★★★
 void loop() { 
   if(startDroneControl()) {
     
-    // 1. 조이스틱(수동) 입력값 및 비상버튼 확인
+    // 1. 조이스틱(수동) 입력값 먼저 확인
     checkThrottle();
     checkRoll();
     checkPitch();
@@ -22,49 +151,43 @@ void loop() {
     if (option == 0x000e) {
       ai_pitch = 0; ai_roll = 0; ai_throttle = 0; ai_command_timestamp = 0; 
     }
-
-    // 3. 수동 오버라이드 조건: 방향키(조이스틱) 뿐만 아니라 '고도 버튼(5,6번)'을 눌러도 발동!
+    
+    // 3. 수동 오버라이드 조건 (방향키 또는 고도키 터치 시 발동)
     bool isManualOverride = (roll != 0 || pitch != 0 || yaw != 0 || !digitalRead(5) || !digitalRead(6));
 
-    // 4. 파이썬(AI) 명령 수신 (프레이밍 < > 적용)
+    // 4. 파이썬(AI)으로부터 들어온 명령 수신 (< > 프레이밍)
     if (Serial.available() > 0) {
       char startChar = Serial.read();
       if (startChar == '<') {
-        delay(5); // 시리얼 버퍼 대기
+        delay(5); 
         char aiCommand = Serial.read();
         char endChar = Serial.read();
 
         if (endChar == '>') {
-          ai_command_timestamp = millis(); // 명령 수신 성공 시 타임아웃 타이머 리셋
+          ai_command_timestamp = millis(); 
 
           if (aiCommand == 'F') { 
             ai_pitch = 80; ai_roll = 0; 
-            // 전진 시 고도를 유지하기 위해 ai_throttle은 건드리지 않음
           } 
           else if (aiCommand == 'S') { 
             ai_pitch = 0; ai_roll = 0; 
           }
           else if (aiCommand == 'U') { 
-            ai_pitch = 0; ai_roll = 0; // 이륙 시 기체 수평 유지
-            ai_throttle = 80;          // ★ 자율 호버링을 위한 기본 스로틀 값 (필요시 70~100 사이로 튜닝)
+            ai_pitch = 0; ai_roll = 0;
+            ai_throttle = 80;  // 자율 호버링 기본 고도
           }
         }
       }
     }
 
-    // 5. 권한 중재 및 Watchdog (타임아웃) 제어
+    // 5. 권한 중재 및 Watchdog 로직
     if (isManualOverride) {
-      // 사람이 조종간이나 고도 버튼을 건드리면 AI의 모든 기억을 지우고 수동 모드 우선!
       ai_pitch = 0; ai_roll = 0; ai_throttle = 0;
     } else {
-      // 2초간 파이썬에서 아무 명령이 없었다면? -> 자동 정지(Watchdog)
       if (millis() - ai_command_timestamp > AI_COMMAND_TIMEOUT_MS) {
         ai_pitch = 0;
         ai_roll = 0;
-        // ★ 핵심: ai_throttle은 0으로 초기화하지 않음! (통신이 끊겨도 공중에서 제자리 호버링 유지)
       }
-      
-      // AI의 기억을 실제 드론 변수에 덮어쓰기
       pitch = ai_pitch;
       roll = ai_roll;
       if (ai_throttle > 0) {
@@ -72,7 +195,7 @@ void loop() {
       }
     }
 
-    // 6. 패킷 검증 및 송신
+    // 6. 무선 전송
     checkCRC();
     sendDroneCommand();
   }
