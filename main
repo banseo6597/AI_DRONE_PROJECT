@@ -1,0 +1,118 @@
+import subprocess
+import json
+import sys
+import serial
+import time
+from vosk import Model, KaldiRecognizer
+
+# ==========================================
+# 1. 아두이노(조종기) USB 시리얼 연결 설정
+# ==========================================
+print("아두이노와 연결을 시도합니다...")
+try:
+    # 환경에 따라 포트 이름이 '/dev/ttyUSB0' 일 수도 있습니다.
+    arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
+    time.sleep(2) # 아두이노 리셋/안정화 대기
+    print("✅ 아두이노 조종기와 성공적으로 연결되었습니다!")
+except Exception as e:
+    print(f"❌ 아두이노 연결 실패: {e}")
+    print("USB 케이블이 꽂혀있는지, 포트 권한이 있는지 확인하세요.")
+    sys.exit(1)
+
+# ==========================================
+# 2. 강력한 키워드(유사어 및 오인식 발음) 사전
+# ==========================================
+# 내가 직접 테스트해보면서 AI가 자주 헷갈리게 출력하는 단어들을 여기에 계속 추가하면 됩니다.
+WAKE_WORDS = ["욘두", "연두", "용두", "윤두", "년두"]
+
+CMD_FORWARD = ["전진", "앞으로", "압프로", "출발", "가"]
+CMD_STOP = ["정지", "멈춰", "스톱", "그만", "서"]
+CMD_TAKEOFF = ["이륙", "상승", "위로", "날아"]
+CMD_LIGHT_ON = ["불 켜", "불켜", "라이트 켜", "켜"]
+CMD_LIGHT_OFF = ["불 꺼", "불꺼", "라이트 꺼", "꺼"]
+
+def analyze_and_execute(text):
+    """인식된 텍스트를 분석하고 아두이노로 명령을 전송합니다."""
+    # 1. 호출어(욘두)가 문장 안에 있는지 검사
+    if not any(wake in text for wake in WAKE_WORDS):
+        return # 욘두를 안 불렀으면 무시함
+
+    print(f"\n🎯 [명령어 감지됨]: {text}")
+
+    # 2. 명령 필터링 및 아두이노 전송
+    if any(word in text for word in CMD_FORWARD):
+        print(">> 🚀 액션: 전진 (F)")
+        arduino.write(b'F')
+        
+    elif any(word in text for word in CMD_STOP):
+        print(">> 🛑 액션: 정지 (S)")
+        arduino.write(b'S')
+        
+    elif any(word in text for word in CMD_TAKEOFF):
+        print(">> 🚁 액션: 이륙 (U)")
+        arduino.write(b'U')
+        
+    elif any(word in text for word in CMD_LIGHT_ON):
+        print(">> 💡 액션: 불 켜 (O)")
+        arduino.write(b'O')
+        
+    elif any(word in text for word in CMD_LIGHT_OFF):
+        print(">> 🌑 액션: 불 꺼 (X)")
+        arduino.write(b'X')
+    else:
+        print(">> ❓ 액션: 욘두는 불렀지만, 무슨 명령인지 알아듣지 못했습니다.")
+
+# ==========================================
+# 3. Vosk 음성 인식 및 arecord 실행
+# ==========================================
+print("Vosk 한국어 모델을 불러오는 중입니다...")
+try:
+    model = Model("model")
+except Exception as e:
+    print("❌ 오류: 모델 폴더를 찾을 수 없습니다.")
+    sys.exit(1)
+
+rec = KaldiRecognizer(model, 16000)
+
+cmd = [
+    "arecord",
+    "-D", "plughw:2,0",    # 마이크 주소 (필요시 변경)
+    "-f", "S16_LE",
+    "-c", "1",
+    "-r", "16000",
+    "-t", "raw",
+    "-q"
+]
+
+print("\n=================================")
+print("🎙️ AI 지상 통제소 시스템 가동 준비 완료")
+print("=================================")
+print("사용 예시: '욘두 전진!', '욘두 불 켜'")
+print("(종료하려면 Ctrl+C를 누르세요)\n")
+
+try:
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    
+    while True:
+        data = process.stdout.read(4000)
+        if len(data) == 0:
+            break
+            
+        if rec.AcceptWaveform(data):
+            result = json.loads(rec.Result())
+            text = result['text'].strip()
+            
+            if text:
+                analyze_and_execute(text)
+        else:
+            partial = json.loads(rec.PartialResult())
+            if partial['partial']:
+                print(f"   (듣는 중... {partial['partial']})", end='\r')
+
+except KeyboardInterrupt:
+    print("\n시스템을 정상적으로 종료합니다.")
+    process.kill()
+    arduino.close()
+except Exception as e:
+    print(f"\n에러 발생: {e}")
+    process.kill()
