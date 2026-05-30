@@ -151,7 +151,7 @@ check_mic_devices()
 # ==========================================
 # "arecord -l" 실행 결과의 card 번호와 device 번호를 확인 후 아래 수정
 # 예: card 2, device 0 → "plughw:2,0"
-MIC_DEVICE = "plughw:2,0"  # ← 본인 환경에 맞게 수정
+MIC_DEVICE = "mic_filtered"  # ← 본인 환경에 맞게 수정
 
 arecord_cmd = [
     "arecord",
