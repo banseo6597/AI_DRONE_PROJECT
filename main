@@ -1,118 +1,210 @@
+#!/usr/bin/env python3
+"""
+욘두 드론 AI 지상 통제소
+기반: 실제 작동 확인된 코드 (Gemini 버전)
+추가: 후진/좌우/하강/착륙 명령, ACK 확인, 포트 자동탐지
+"""
+
 import subprocess
 import json
 import sys
 import serial
+import serial.tools.list_ports
 import time
 from vosk import Model, KaldiRecognizer
 
 # ==========================================
-# 1. 아두이노(조종기) USB 시리얼 연결 설정
+# 1. 아두이노 시리얼 연결 (포트 자동 탐지)
 # ==========================================
+def find_arduino():
+    """아두이노 포트를 자동으로 찾습니다."""
+    candidates = ["/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyUSB0", "/dev/ttyUSB1"]
+    
+    # 자동 탐지 시도
+    for port in serial.tools.list_ports.comports():
+        if any(k in (port.description or "") for k in ["Arduino", "CH340", "CP210"]):
+            print(f"[자동탐지] 아두이노 발견: {port.device}")
+            return port.device
+    
+    # 자동 탐지 실패 시 후보 순서대로 시도
+    for candidate in candidates:
+        try:
+            s = serial.Serial(candidate, 9600, timeout=0.1)
+            s.close()
+            print(f"[포트] 사용 가능한 포트: {candidate}")
+            return candidate
+        except:
+            continue
+    
+    return "/dev/ttyACM0"  # 최종 기본값
+
 print("아두이노와 연결을 시도합니다...")
 try:
-    # 환경에 따라 포트 이름이 '/dev/ttyUSB0' 일 수도 있습니다.
-    arduino = serial.Serial('/dev/ttyACM0', 9600, timeout=1)
-    time.sleep(2) # 아두이노 리셋/안정화 대기
-    print("✅ 아두이노 조종기와 성공적으로 연결되었습니다!")
+    port = find_arduino()
+    arduino = serial.Serial(port, 9600, timeout=1)
+    time.sleep(2)
+    print(f"✅ 아두이노 연결 성공! ({port})")
 except Exception as e:
     print(f"❌ 아두이노 연결 실패: {e}")
-    print("USB 케이블이 꽂혀있는지, 포트 권한이 있는지 확인하세요.")
     sys.exit(1)
 
-# ==========================================
-# 2. 강력한 키워드(유사어 및 오인식 발음) 사전
-# ==========================================
-# 내가 직접 테스트해보면서 AI가 자주 헷갈리게 출력하는 단어들을 여기에 계속 추가하면 됩니다.
-WAKE_WORDS = ["욘두", "연두", "용두", "윤두", "년두"]
 
-CMD_FORWARD = ["전진", "앞으로", "압프로", "출발", "가"]
-CMD_STOP = ["정지", "멈춰", "스톱", "그만", "서"]
-CMD_TAKEOFF = ["이륙", "상승", "위로", "날아"]
-CMD_LIGHT_ON = ["불 켜", "불켜", "라이트 켜", "켜"]
-CMD_LIGHT_OFF = ["불 꺼", "불꺼", "라이트 꺼", "꺼"]
+# ==========================================
+# 2. 명령어 사전 (유사 발음 포함)
+# ==========================================
+WAKE_WORDS = ["욘두", "연두", "용두", "윤두", "년두", "욘 두"]
 
-def analyze_and_execute(text):
-    """인식된 텍스트를 분석하고 아두이노로 명령을 전송합니다."""
-    # 1. 호출어(욘두)가 문장 안에 있는지 검사
+# 각 명령: (아두이노 전송 코드, 출력 설명, 키워드 목록)
+COMMANDS = [
+    ('F', "전진",   ["전진", "앞으로", "압프로", "출발", "포워드"]),
+    ('B', "후진",   ["후진", "뒤로", "백"]),
+    ('L', "좌측",   ["왼쪽", "좌측", "좌", "레프트"]),
+    ('R', "우측",   ["오른쪽", "우측", "우", "라이트"]),
+    ('U', "상승",   ["이륙", "상승", "위로", "올라", "날아", "출발"]),
+    ('D', "하강",   ["하강", "내려", "아래로", "낮춰"]),
+    ('G', "착륙",   ["착륙", "내려앉아", "랜딩"]),
+    ('S', "정지",   ["정지", "멈춰", "스톱", "그만", "서", "호버"]),
+    ('O', "불 켜",  ["불 켜", "불켜", "라이트 켜", "켜", "점등"]),
+    ('X', "불 꺼",  ["불 꺼", "불꺼", "라이트 꺼", "꺼", "소등"]),
+]
+
+
+# ==========================================
+# 3. 명령 전송 함수 (ACK 확인 포함)
+# ==========================================
+def send_command(code: str, description: str):
+    """아두이노로 명령을 전송하고 ACK를 기다립니다."""
+    arduino.write(code.encode())
+    print(f"   📤 전송: '{code}' ({description})")
+    
+    # ACK 대기 (최대 300ms)
+    deadline = time.time() + 0.3
+    while time.time() < deadline:
+        if arduino.in_waiting:
+            ack = arduino.readline().decode(errors='ignore').strip()
+            if ack.startswith("ACK"):
+                print(f"   ✅ 수신 확인: {ack}")
+                return True
+    
+    print(f"   ⚠️  ACK 없음 (아두이노가 바쁘거나 비상 상태)")
+    return False
+
+
+def analyze_and_execute(text: str):
+    """인식 텍스트 → 호출어 확인 → 명령 추출 → 전송"""
+    
+    # 1. 호출어 확인
     if not any(wake in text for wake in WAKE_WORDS):
-        return # 욘두를 안 불렀으면 무시함
+        return
 
-    print(f"\n🎯 [명령어 감지됨]: {text}")
+    print(f"\n🎯 호출어 감지! 전체 문장: '{text}'")
 
-    # 2. 명령 필터링 및 아두이노 전송
-    if any(word in text for word in CMD_FORWARD):
-        print(">> 🚀 액션: 전진 (F)")
-        arduino.write(b'F')
-        
-    elif any(word in text for word in CMD_STOP):
-        print(">> 🛑 액션: 정지 (S)")
-        arduino.write(b'S')
-        
-    elif any(word in text for word in CMD_TAKEOFF):
-        print(">> 🚁 액션: 이륙 (U)")
-        arduino.write(b'U')
-        
-    elif any(word in text for word in CMD_LIGHT_ON):
-        print(">> 💡 액션: 불 켜 (O)")
-        arduino.write(b'O')
-        
-    elif any(word in text for word in CMD_LIGHT_OFF):
-        print(">> 🌑 액션: 불 꺼 (X)")
-        arduino.write(b'X')
-    else:
-        print(">> ❓ 액션: 욘두는 불렀지만, 무슨 명령인지 알아듣지 못했습니다.")
+    # 2. 명령어 매칭 (우선순위: 리스트 위쪽이 먼저 체크됨)
+    matched = False
+    for code, desc, keywords in COMMANDS:
+        if any(kw in text for kw in keywords):
+            send_command(code, desc)
+            matched = True
+            # 복합 명령 지원: break 제거 시 "앞으로 불 켜" 같은 복합 명령 처리 가능
+            # 여기서는 안전을 위해 첫 번째 명령만 처리
+            break
+
+    if not matched:
+        print("   ❓ 호출어는 들었지만 명령을 알아듣지 못했습니다.")
+        print(f"   💡 사용 가능: 전진/후진/왼쪽/오른쪽/이륙/하강/착륙/정지/불 켜/불 꺼")
+
 
 # ==========================================
-# 3. Vosk 음성 인식 및 arecord 실행
+# 4. Vosk 모델 로드
 # ==========================================
-print("Vosk 한국어 모델을 불러오는 중입니다...")
+print("\nVosk 한국어 모델 로딩 중...")
 try:
-    model = Model("model")
+    model = Model("model")  # 폴더명 'model' (vosk-model-small-ko 폴더를 model로 복사/링크)
+    print("✅ 모델 로드 완료!")
 except Exception as e:
-    print("❌ 오류: 모델 폴더를 찾을 수 없습니다.")
+    print(f"❌ 모델 로드 실패: {e}")
+    print("   'model' 폴더가 스크립트와 같은 위치에 있는지 확인하세요.")
     sys.exit(1)
 
 rec = KaldiRecognizer(model, 16000)
 
-cmd = [
+
+# ==========================================
+# 5. 마이크 장치 확인 (실행 전 한 번 확인용)
+# ==========================================
+def check_mic_devices():
+    """사용 가능한 마이크 목록 출력"""
+    try:
+        result = subprocess.run(["arecord", "-l"], capture_output=True, text=True)
+        print("\n[마이크 목록]")
+        for line in result.stdout.split('\n'):
+            if 'card' in line.lower():
+                print(f"  {line}")
+    except:
+        pass
+
+check_mic_devices()
+
+
+# ==========================================
+# 6. arecord 설정 (실제 마이크 주소로 수정)
+# ==========================================
+# "arecord -l" 실행 결과의 card 번호와 device 번호를 확인 후 아래 수정
+# 예: card 2, device 0 → "plughw:2,0"
+MIC_DEVICE = "plughw:2,0"  # ← 본인 환경에 맞게 수정
+
+arecord_cmd = [
     "arecord",
-    "-D", "plughw:2,0",    # 마이크 주소 (필요시 변경)
+    "-D", MIC_DEVICE,
     "-f", "S16_LE",
     "-c", "1",
     "-r", "16000",
     "-t", "raw",
-    "-q"
+    "-q"          # quiet (불필요한 출력 억제)
 ]
 
-print("\n=================================")
-print("🎙️ AI 지상 통제소 시스템 가동 준비 완료")
-print("=================================")
-print("사용 예시: '욘두 전진!', '욘두 불 켜'")
-print("(종료하려면 Ctrl+C를 누르세요)\n")
+print("\n" + "="*45)
+print("🎙️  욘두 AI 지상 통제소 가동!")
+print("="*45)
+print("사용법: '욘두 [명령어]'")
+print("명령어: 전진 / 후진 / 왼쪽 / 오른쪽")
+print("        이륙 / 하강 / 착륙 / 정지")
+print("        불 켜 / 불 꺼")
+print("종료: Ctrl+C")
+print("="*45 + "\n")
 
+
+# ==========================================
+# 7. 메인 루프
+# ==========================================
 try:
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE)
-    
+    process = subprocess.Popen(arecord_cmd, stdout=subprocess.PIPE)
+
     while True:
         data = process.stdout.read(4000)
         if len(data) == 0:
+            print("[오류] 마이크 스트림이 끊어졌습니다.")
             break
-            
+
         if rec.AcceptWaveform(data):
+            # 문장 완성
             result = json.loads(rec.Result())
-            text = result['text'].strip()
-            
+            text = result.get('text', '').strip()
             if text:
                 analyze_and_execute(text)
         else:
+            # 실시간 부분 인식 표시
             partial = json.loads(rec.PartialResult())
-            if partial['partial']:
-                print(f"   (듣는 중... {partial['partial']})", end='\r')
+            p_text = partial.get('partial', '')
+            if p_text:
+                print(f"   (듣는 중... {p_text})", end='\r')
 
 except KeyboardInterrupt:
-    print("\n시스템을 정상적으로 종료합니다.")
-    process.kill()
-    arduino.close()
+    print("\n\n[시스템] 정상 종료합니다.")
 except Exception as e:
-    print(f"\n에러 발생: {e}")
-    process.kill()
+    print(f"\n[오류] {e}")
+finally:
+    try: process.kill()
+    except: pass
+    arduino.close()
+    print("[시스템] 연결 해제 완료.")
