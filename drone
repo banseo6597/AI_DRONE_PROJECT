@@ -172,33 +172,9 @@ void loop() {
           ai_pitch = -100; ai_roll = 0;
           Serial.println("ACK:B");
           break;
-        case 'L':                       // 왼쪽
-          ai_roll = -100; ai_pitch = 0;
-          Serial.println("ACK:L");
-          break;
-        case 'R':                       // 오른쪽
-          ai_roll = 100; ai_pitch = 0;
-          Serial.println("ACK:R");
-          break;
         case 'U':                       // 상승 (이륙)
           if(throttle < 121) throttle += 30;
           Serial.println("ACK:U");
-          break;
-        case 'D':                       // 하강
-          if(throttle > 20) throttle -= 20;
-          Serial.println("ACK:D");
-          break;
-        case 'S':                       // 정지 (수평 이동만 멈춤)
-          ai_pitch = 0; ai_roll = 0;
-          Serial.println("ACK:S");
-          break;
-        case 'O':                       // LED 켜기
-          ai_led = true;
-          Serial.println("ACK:O");
-          break;
-        case 'X':                       // LED 끄기
-          ai_led = false;
-          Serial.println("ACK:X");
           break;
         case 'G':                       // 착륙 (서서히 하강)
           ai_pitch = 0; ai_roll = 0;
