@@ -251,6 +251,8 @@ print("="*45 + "\n")
 # ==========================================
 # 7. 메인 루프
 # ==========================================
+last_executed_text = ""  # 이미 실행한 텍스트 기억 (중복 방지)
+
 try:
     process = subprocess.Popen(arecord_cmd, stdout=subprocess.PIPE)
 
@@ -261,18 +263,28 @@ try:
             break
 
         if rec.AcceptWaveform(data):
-            # 문장 완성 → 최종 처리
+            # 문장 완성
             result = json.loads(rec.Result())
             text = result.get('text', '').strip()
             if text:
+                print(f"\n[인식 완료]: '{text}'")
+                last_executed_text = ""  # 새 문장이니 초기화
                 analyze_and_execute(text, from_partial=False)
         else:
-            # 부분 인식 → 빠른 반응
+            # 부분 인식
             partial = json.loads(rec.PartialResult())
             p_text = partial.get('partial', '').strip()
             if p_text:
                 print(f"   (듣는 중... {p_text})", end='\r')
-                analyze_and_execute(p_text, from_partial=True)
+
+                # 호출어 + 명령어가 모두 감지되면 즉시 실행 (1회만)
+                has_wake = any(w in p_text for w in WAKE_WORDS)
+                has_cmd  = any(kw in p_text for _, _, kws in COMMANDS for kw in kws)
+
+                if has_wake and has_cmd and p_text != last_executed_text:
+                    last_executed_text = p_text
+                    print(f"\n[부분인식 실행]: '{p_text}'")
+                    analyze_and_execute(p_text, from_partial=True)
 
 except KeyboardInterrupt:
     print("\n\n[시스템] 정상 종료합니다.")
