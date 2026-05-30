@@ -155,12 +155,13 @@ MIC_DEVICE = "plughw:2,0"  # ← 본인 환경에 맞게 수정
 
 arecord_cmd = [
     "arecord",
-    "-D", MIC_DEVICE,
+    "-D", f"plughw:0,0",   # 직접 hw 지정 (plug 레이어 노이즈 처리 활용)
     "-f", "S16_LE",
     "-c", "1",
     "-r", "16000",
     "-t", "raw",
-    "-q"          # quiet (불필요한 출력 억제)
+    "-q",
+    "--buffer-size=4096"   # 버퍼 안정화
 ]
 
 print("\n" + "="*45)
