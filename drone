@@ -30,6 +30,14 @@ int ai_yaw      = 0;
 int ai_throttle = 0;   // ★ 추가: 상승/하강 기억
 bool ai_led     = false; // ★ 추가: LED 상태 기억 (option 비트로 제어)
 
+// ==== 이륙 드리프트 보정 (트림) ====
+// 이륙 시 기체가 '우측-앞'으로 쏠리는 현상을 상쇄한다.
+//   우측 쏠림 → roll 을 음수(좌)로,  앞 쏠림 → pitch 를 음수(뒤)로 보정.
+// 실제 쏠림 정도를 보며 0 ~ ±40 사이에서 조절하세요.
+// (보정 방향이 반대로 작동하면 부호를 뒤집으면 됩니다.)
+int rollTrim  = -20;  // 좌(-) / 우(+) 보정
+int pitchTrim = -20;  // 뒤(-) / 앞(+) 보정
+
 // ==== AI 명령 유지 타이머 ====
 // 음성 명령은 한 번만 수신되므로, 일정 시간 동안 값을 유지해야 드론이 움직임
 unsigned long cmdReceivedAt = 0;
@@ -201,6 +209,14 @@ void loop() {
       // 조이스틱 중립 → AI 기억값 덮어쓰기
       pitch = ai_pitch;
       roll  = ai_roll;
+    }
+
+    // ── 5.5 이륙 드리프트 트림 보정 ─────────────────────
+    // 수동 조작 중이 아닐 때(호버/AI 비행)만 쏠림을 상쇄한다.
+    // 수동 조종 중에는 조종자가 직접 보정하므로 건드리지 않음.
+    if (!isManualOverride) {
+      roll  = constrain(roll  + rollTrim,  -200, 200);
+      pitch = constrain(pitch + pitchTrim, -200, 200);
     }
 
     // ── 6. LED option 비트 반영 ─────────────────────────
