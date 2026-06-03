@@ -24,22 +24,19 @@ unsigned int firstRoll;
 unsigned int firstPitch;
 
 // ==== AI 기억장치 변수 ====
-int ai_pitch    = 0;
-int ai_roll     = 0;
-int ai_yaw      = 0;
-int ai_throttle = 0;   // ★ 추가: 상승/하강 기억
-bool ai_led     = false; // ★ 추가: LED 상태 기억 (option 비트로 제어)
+int  ai_pitch    = 0;
+int  ai_roll     = 0;
+bool ai_led      = false;
 
 // ==== AI 명령 유지 타이머 ====
-// 음성 명령은 한 번만 수신되므로, 일정 시간 동안 값을 유지해야 드론이 움직임
 unsigned long cmdReceivedAt = 0;
-#define CMD_HOLD_MS 800  // 명령 유지 시간 (ms), 기체 반응 보고 조정
+#define CMD_HOLD_MS 800
 
 //-----------------------------------------------------
 
 void checkThrottle() {
-  if(!digitalRead(6)) { if(throttle > 9)   throttle -= 10; }
-  else if(!digitalRead(5)) { if(throttle < 141) throttle += 20; }
+  if(!digitalRead(6))      { if(throttle > 9)   throttle -= 10; }
+  else if(!digitalRead(5)) { if(throttle < 141)  throttle += 20; }
 }
 
 void checkYaw() {
@@ -51,10 +48,10 @@ void checkYaw() {
 void checkEmergency() {
   if(!digitalRead(9)) {
     roll = 0; pitch = 0; yaw = 0; throttle = 0; option = 0x000e;
-    // 비상 시 AI 기억도 전부 초기화
-    ai_pitch = 0; ai_roll = 0; ai_yaw = 0; ai_throttle = 0;
+    // 비상 시 AI 기억 전부 초기화
+    ai_pitch = 0; ai_roll = 0;
   } else {
-    option = ai_led ? 0x001f : 0x000f; // ★ LED 상태 반영
+    option = ai_led ? 0x001f : 0x000f;
   }
 }
 
@@ -64,8 +61,8 @@ void checkRoll() {
   else if(secondRoll < firstRoll - 350) roll = -160;
   else if(secondRoll < firstRoll - 250) roll = -120;
   else if(secondRoll < firstRoll - 150) roll = -80;
-  else if(secondRoll < firstRoll - 80)  roll = -40;
-  else if(secondRoll < firstRoll + 80)  roll = 0;
+  else if(secondRoll < firstRoll - 80)  roll = -40;  // ★ 데드존 확대
+  else if(secondRoll < firstRoll + 80)  roll = 0;    // ★ 데드존 확대
   else if(secondRoll < firstRoll + 150) roll = 40;
   else if(secondRoll < firstRoll + 250) roll = 80;
   else if(secondRoll < firstRoll + 350) roll = 120;
@@ -79,8 +76,8 @@ void checkPitch() {
   else if(secondPitch < firstPitch - 350) pitch = -160;
   else if(secondPitch < firstPitch - 250) pitch = -120;
   else if(secondPitch < firstPitch - 150) pitch = -80;
-  else if(secondPitch < firstPitch - 80)  pitch = -40;
-  else if(secondPitch < firstPitch + 80)  pitch = 0;
+  else if(secondPitch < firstPitch - 80)  pitch = -40;  // ★ 데드존 확대
+  else if(secondPitch < firstPitch + 80)  pitch = 0;    // ★ 데드존 확대
   else if(secondPitch < firstPitch + 150) pitch = 40;
   else if(secondPitch < firstPitch + 250) pitch = 80;
   else if(secondPitch < firstPitch + 350) pitch = 120;
@@ -122,74 +119,111 @@ void checkCRC() {
   checkSum = checkSum & 0x00ff;
 }
 
+// ★ 캘리브레이션: 20번 평균값으로 기준점 설정
 unsigned char startDroneControl() {
   if(!digitalRead(9)) {
-    firstRoll  = analogRead(4);
-    firstPitch = analogRead(5);
+    long sumRoll = 0, sumPitch = 0;
+    for(int i = 0; i < 20; i++) {
+      sumRoll  += analogRead(4);
+      sumPitch += analogRead(5);
+      delay(5);
+    }
+    firstRoll  = sumRoll  / 20;
+    firstPitch = sumPitch / 20;
+
+    Serial.print("캘리브레이션 완료 - Roll 기준: ");
+    Serial.print(firstRoll);
+    Serial.print(" / Pitch 기준: ");
+    Serial.println(firstPitch);
+
     drone_action = 1;
   }
   return drone_action;
 }
 
 void setup() {
-  Serial.begin(9600);     // 라즈베리파이 통신
-  bleSerial.begin(9600);  // BLE 모듈 통신
+  Serial.begin(9600);
+  bleSerial.begin(9600);
 
   for(int i = 5; i < 11; i++) {
     pinMode(i, INPUT);
-    digitalWrite(i, HIGH); // 내부 풀업
+    digitalWrite(i, HIGH);
   }
   delay(500);
+  Serial.println("시스템 준비 완료. 9번 버튼을 눌러 캘리브레이션 시작");
 }
 
 //-----------------------------------------------------
-// ★★★ 하이브리드 제어 + AI 기억장치 메인 루프 ★★★
 void loop() {
   if(startDroneControl()) {
 
-    // ── 1. 수동 조이스틱 입력 읽기 ─────────────────────
+    // ── 1. 수동 조이스틱 입력 읽기 ──────────────────────
     checkThrottle();
     checkRoll();
     checkPitch();
     checkYaw();
     checkEmergency();
 
-    // ── 2. 수동 조작 여부 판별 ──────────────────────────
+    // ── 2. 수동 조작 여부 판별 (±40 이하는 오차로 무시) ──
     bool isManualOverride = (abs(roll) > 40 || abs(pitch) > 40);
-    // ※ yaw, throttle은 버튼 방식이므로 오버라이드 판별에서 제외
 
-    // ── 3. 시리얼로 AI 명령 수신 및 기억 ────────────────
+    // ── 3. AI 명령 수신 ──────────────────────────────────
     if (Serial.available() > 0) {
       char aiCommand = Serial.read();
-      cmdReceivedAt = millis(); // 수신 시각 기록
+      cmdReceivedAt = millis();
 
       switch(aiCommand) {
-        case 'F':                       // 전진
-          ai_pitch = 100; ai_roll = 0;
-          Serial.println("ACK:F");      // 라즈베리파이에 수신 확인 응답
+        case 'F':
+          ai_pitch = 100;
+          ai_roll  = 0;
+          Serial.println("ACK:F");
           break;
-        case 'B':                       // 후진
-          ai_pitch = -100; ai_roll = 0;
+
+        case 'B':
+          ai_pitch = -100;
+          ai_roll  = 0;
           Serial.println("ACK:B");
           break;
-        case 'U':                       // 상승 (이륙)
+
+        case 'U':
+          // ★ 상승 시 pitch/roll 완전 고정
           ai_pitch = 0;
           ai_roll  = 0;
-          pitch    = 0;   // 즉시 강제 초기화
+          pitch    = 0;
           roll     = 0;
           if(throttle < 121) throttle += 30;
           Serial.println("ACK:U");
           break;
-        case 'G':                       // 착륙 (서서히 하강)
-          ai_pitch = 0; ai_roll = 0;
+
+        case 'G':
+          // ★ 착륙 시 pitch/roll 완전 고정
+          ai_pitch = 0;
+          ai_roll  = 0;
+          pitch    = 0;
+          roll     = 0;
           if(throttle > 0) throttle -= 10;
           Serial.println("ACK:G");
+          break;
+
+        case 'S':
+          ai_pitch = 0;
+          ai_roll  = 0;
+          Serial.println("ACK:S");
+          break;
+
+        case 'O':
+          ai_led = true;
+          Serial.println("ACK:O");
+          break;
+
+        case 'X':
+          ai_led = false;
+          Serial.println("ACK:X");
           break;
       }
     }
 
     // ── 4. 명령 유지 시간 초과 시 수평이동 자동 정지 ────
-    // (throttle은 유지 — 고도는 계속 잡아야 하므로)
     if(millis() - cmdReceivedAt > CMD_HOLD_MS) {
       ai_pitch = 0;
       ai_roll  = 0;
@@ -197,20 +231,16 @@ void loop() {
 
     // ── 5. 권한 중재: 수동 vs AI ────────────────────────
     if (isManualOverride) {
-      // 사람이 조이스틱을 건드리면 AI 기억 즉시 초기화
+      // 사람이 조이스틱 조작 시 AI 기억 즉시 초기화
       ai_pitch = 0;
       ai_roll  = 0;
-      // roll, pitch 값은 checkRoll/checkPitch 에서 이미 설정됨
     } else {
-      // 조이스틱 중립 → AI 기억값 덮어쓰기
+      // 조이스틱 중립 → AI 기억값 적용
       pitch = ai_pitch;
       roll  = ai_roll;
     }
 
-    // ── 6. LED option 비트 반영 ─────────────────────────
-    // (checkEmergency에서 비상이 아닌 경우 이미 설정됨)
-
-    // ── 7. 최종 패킷 전송 ───────────────────────────────
+    // ── 6. 최종 패킷 전송 ───────────────────────────────
     checkCRC();
     sendDroneCommand();
   }
