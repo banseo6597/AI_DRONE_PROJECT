@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 욘두 드론 AI 지상 통제소
-명령어: 전진(F) / 후진(B) / 상승(U) / 하강(G)
+명령어: 전진(F) / 후진(B) / 상승(U) / 하강(G) / 자동임무(M)
 """
 
 import subprocess
@@ -10,6 +10,7 @@ import sys
 import serial
 import serial.tools.list_ports
 import time
+import threading
 from vosk import Model, KaldiRecognizer
 
 # ==========================================
@@ -43,7 +44,20 @@ except Exception as e:
 
 
 # ==========================================
-# 2. 명령어 사전
+# 2. 자동 임무 시간 설정값
+# ==========================================
+TAKEOFF_TIME  = 3.0   # 이륙 대기 시간 (초) — 드론이 충분히 뜰 때까지
+FORWARD_TIME  = 2.0   # 전진 시간 (초) — 길수록 더 멀리 이동
+HOVER_TIME    = 1.0   # 목적지 도착 후 정지 대기 시간 (초)
+LANDING_COUNT = 5     # 착륙 명령 반복 횟수
+LANDING_DELAY = 0.5   # 착륙 명령 간격 (초)
+
+# 자동 임무 실행 중 여부 (중복 실행 방지)
+mission_running = False
+
+
+# ==========================================
+# 3. 명령어 사전
 # ==========================================
 WAKE_WORDS = [
     # 정확한 발음
@@ -56,8 +70,8 @@ WAKE_WORDS = [
     "욘두야", "욘두아", "욘두어",
     "온드", "완두", "욘도", "용도",
     "윤도", "연도", "욘디", "용디",
-    "욘두가", "욘두는", "욘두야",
-    "요두", "용드", "욘듀", "욘뚜",
+    "욘두가", "욘두는",
+    "요두", "욘듀", "욘뚜",
 ]
 
 CMD_FORWARD = [
@@ -72,7 +86,6 @@ CMD_FORWARD = [
     "전신", "전씬", "전씽",
     "진진", "젠진", "전징",
     "전딘", "전띤", "전뚱",
-    "전징", "전쟁", "전쟁해",
     "전닌", "전닝", "전딩",
 ]
 
@@ -102,7 +115,7 @@ CMD_TAKEOFF = [
     "상승이", "상승을", "상승은",
     "상 승", "상스", "상슈",
     "상진", "상신", "상선",
-    "쌍순", "쌍슨", "쌍슴",
+    "쌍슨", "쌍슴",
     "상숭", "상쑹", "상씽",
     "샹순", "샹슨", "샹슴",
 ]
@@ -119,22 +132,88 @@ CMD_LAND = [
     "강하", "강하해", "강하해라",
     "하항", "하앙", "하양",
     "하캉", "하칸", "하칭",
-    "아강", "아간", "아갈",
     "하깡", "하껑", "하꽝",
     "하광", "하관", "하갱",
 ]
 
+CMD_MISSION = [
+    # 자동 임무 호출어
+    "자동", "자동 임무", "미션", "임무 시작",
+    "자율 비행", "자동 비행", "출동",
+    "갔다 와", "갔다와", "다녀와",
+    "자동으로", "자율로", "알아서",
+    "임무", "작전", "작전 시작",
+    "고고", "출발 자동", "자동 출발",
+    "자동이", "자동을", "자동은",
+    "미션 시작", "미션이", "미션을",
+]
+
 # (전송코드, 설명, 키워드 리스트)
 COMMANDS = [
-    ('F', "전진", CMD_FORWARD),
-    ('B', "후진", CMD_BACKWARD),
-    ('U', "상승", CMD_TAKEOFF),
-    ('G', "하강", CMD_LAND),
+    ('F', "전진",    CMD_FORWARD),
+    ('B', "후진",    CMD_BACKWARD),
+    ('U', "상승",    CMD_TAKEOFF),
+    ('G', "하강",    CMD_LAND),
+    ('M', "자동임무", CMD_MISSION),
 ]
 
 
 # ==========================================
-# 3. 명령 전송 함수 (ACK 확인 포함)
+# 4. 자동 임무 함수
+# ==========================================
+def auto_mission():
+    global mission_running
+
+    if mission_running:
+        print("   ⚠️  이미 자동 임무 실행 중입니다.")
+        return
+
+    mission_running = True
+    print("\n" + "="*40)
+    print("🚀 자동 임무 시작!")
+    print("="*40)
+
+    try:
+        # 1단계: 이륙
+        print("[1단계] 🛫 이륙 중...")
+        for _ in range(3):
+            arduino.write(b'U')
+            time.sleep(0.5)
+        time.sleep(TAKEOFF_TIME)
+        print(f"        이륙 완료 ({TAKEOFF_TIME}초)")
+
+        # 2단계: 전진
+        print("[2단계] ➡️  전진 중...")
+        arduino.write(b'F')
+        time.sleep(FORWARD_TIME)
+        print(f"        전진 완료 ({FORWARD_TIME}초)")
+
+        # 3단계: 정지 호버링
+        print("[3단계] ⏸️  정지 중...")
+        arduino.write(b'S')
+        time.sleep(HOVER_TIME)
+        print(f"        정지 완료 ({HOVER_TIME}초)")
+
+        # 4단계: 착륙
+        print("[4단계] 🛬 착륙 중...")
+        for i in range(LANDING_COUNT):
+            arduino.write(b'G')
+            time.sleep(LANDING_DELAY)
+            print(f"        착륙 명령 {i+1}/{LANDING_COUNT}")
+
+        print("="*40)
+        print("✅ 자동 임무 완료!")
+        print("="*40 + "\n")
+
+    except Exception as e:
+        print(f"[자동임무 오류] {e}")
+
+    finally:
+        mission_running = False
+
+
+# ==========================================
+# 5. 명령 전송 함수 (ACK 확인 포함)
 # ==========================================
 last_command      = None
 last_command_time = 0
@@ -143,6 +222,19 @@ COMMAND_COOLDOWN  = 1.5  # 동일 명령 연속 방지 (초)
 def send_command(code: str, description: str):
     global last_command, last_command_time
 
+    # 자동 임무는 별도 처리
+    if code == 'M':
+        t = threading.Thread(target=auto_mission)
+        t.daemon = True
+        t.start()
+        return True
+
+    # 자동 임무 실행 중에는 수동 명령 차단
+    if mission_running:
+        print("   🔒 자동 임무 실행 중 — 수동 명령 차단됨")
+        return False
+
+    # 중복 명령 방지
     now = time.time()
     if code == last_command and (now - last_command_time) < COMMAND_COOLDOWN:
         print(f"   ⏱️  중복 명령 무시 ({description})")
@@ -166,7 +258,7 @@ def send_command(code: str, description: str):
 
 
 # ==========================================
-# 4. 명령 분석 및 실행 함수
+# 6. 명령 분석 및 실행 함수
 # ==========================================
 def analyze_and_execute(text: str, from_partial: bool = False):
     # 호출어 확인
@@ -184,11 +276,11 @@ def analyze_and_execute(text: str, from_partial: bool = False):
 
     if not matched:
         print("   ❓ 명령을 알아듣지 못했습니다.")
-        print("   💡 사용 가능: 전진 / 후진 / 상승 / 하강")
+        print("   💡 사용 가능: 전진 / 후진 / 상승 / 하강 / 자동임무")
 
 
 # ==========================================
-# 5. Vosk 모델 로드
+# 7. Vosk 모델 로드
 # ==========================================
 print("\nVosk 한국어 모델 로딩 중...")
 try:
@@ -205,7 +297,7 @@ rec.SetWords(True)
 
 
 # ==========================================
-# 6. 마이크 장치 확인
+# 8. 마이크 장치 확인
 # ==========================================
 def check_mic_devices():
     try:
@@ -237,12 +329,16 @@ print("🎙️  욘두 AI 지상 통제소 가동!")
 print("="*45)
 print("사용법: '욘두 [명령어]'")
 print("명령어: 전진 / 후진 / 상승 / 하강")
+print("        자동임무 (이륙→전진→착륙 자동 수행)")
+print(f"자동임무 설정: 이륙 {TAKEOFF_TIME}초 / "
+      f"전진 {FORWARD_TIME}초 / "
+      f"착륙 {LANDING_COUNT}회")
 print("종료: Ctrl+C")
 print("="*45 + "\n")
 
 
 # ==========================================
-# 7. 메인 루프
+# 9. 메인 루프
 # ==========================================
 last_executed_text = ""  # 중복 실행 방지
 
@@ -261,7 +357,7 @@ try:
             text   = result.get('text', '').strip()
             if text:
                 print(f"\n[인식 완료]: '{text}'")
-                last_executed_text = ""  # 새 문장이니 초기화
+                last_executed_text = ""
                 analyze_and_execute(text, from_partial=False)
         else:
             # 부분 인식 → 호출어 + 명령어 모두 감지 시 즉시 실행
@@ -271,7 +367,11 @@ try:
                 print(f"   (듣는 중... {p_text})", end='\r')
 
                 has_wake = any(w in p_text for w in WAKE_WORDS)
-                has_cmd  = any(kw in p_text for _, _, kws in COMMANDS for kw in kws)
+                has_cmd  = any(
+                    kw in p_text
+                    for _, _, kws in COMMANDS
+                    for kw in kws
+                )
 
                 if has_wake and has_cmd and p_text != last_executed_text:
                     last_executed_text = p_text
