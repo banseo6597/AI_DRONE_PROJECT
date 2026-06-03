@@ -64,8 +64,8 @@ void checkRoll() {
   else if(secondRoll < firstRoll - 350) roll = -160;
   else if(secondRoll < firstRoll - 250) roll = -120;
   else if(secondRoll < firstRoll - 150) roll = -80;
-  else if(secondRoll < firstRoll - 50)  roll = -40;
-  else if(secondRoll < firstRoll + 50)  roll = 0;
+  else if(secondRoll < firstRoll - 80)  roll = -40;
+  else if(secondRoll < firstRoll + 80)  roll = 0;
   else if(secondRoll < firstRoll + 150) roll = 40;
   else if(secondRoll < firstRoll + 250) roll = 80;
   else if(secondRoll < firstRoll + 350) roll = 120;
@@ -79,8 +79,8 @@ void checkPitch() {
   else if(secondPitch < firstPitch - 350) pitch = -160;
   else if(secondPitch < firstPitch - 250) pitch = -120;
   else if(secondPitch < firstPitch - 150) pitch = -80;
-  else if(secondPitch < firstPitch - 50)  pitch = -40;
-  else if(secondPitch < firstPitch + 50)  pitch = 0;
+  else if(secondPitch < firstPitch - 80)  pitch = -40;
+  else if(secondPitch < firstPitch + 80)  pitch = 0;
   else if(secondPitch < firstPitch + 150) pitch = 40;
   else if(secondPitch < firstPitch + 250) pitch = 80;
   else if(secondPitch < firstPitch + 350) pitch = 120;
@@ -155,7 +155,7 @@ void loop() {
     checkEmergency();
 
     // ── 2. 수동 조작 여부 판별 ──────────────────────────
-    bool isManualOverride = (roll != 0 || pitch != 0);
+    bool isManualOverride = (abs(roll) > 40 || abs(pitch) > 40);
     // ※ yaw, throttle은 버튼 방식이므로 오버라이드 판별에서 제외
 
     // ── 3. 시리얼로 AI 명령 수신 및 기억 ────────────────
@@ -173,6 +173,10 @@ void loop() {
           Serial.println("ACK:B");
           break;
         case 'U':                       // 상승 (이륙)
+          ai_pitch = 0;
+          ai_roll  = 0;
+          pitch    = 0;   // 즉시 강제 초기화
+          roll     = 0;
           if(throttle < 121) throttle += 30;
           Serial.println("ACK:U");
           break;
