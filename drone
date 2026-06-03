@@ -241,6 +241,11 @@ void loop() {
     }
 
     // ── 6. 최종 패킷 전송 ───────────────────────────────
+    // ★ 디버그: 실제 전송값 출력
+    Serial.print("roll:"); Serial.print(roll);
+    Serial.print(" pitch:"); Serial.print(pitch);
+    Serial.print(" throttle:"); Serial.println(throttle);
+
     checkCRC();
     sendDroneCommand();
   }
