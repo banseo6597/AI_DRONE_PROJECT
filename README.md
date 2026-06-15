@@ -1,4 +1,4 @@
-<h1 align="center">Hi 👋, I'm SSD</h1>
+<h1 align="center">Hi 👋, I'm Banseo6597</h1>
 <h3 align="center">A passionate frontend developer from India</h3>
 
 - 🔭 I’m currently working on [AI_DRONE_PROJECT](https://github.com/banseo6597/AI_DRONE_PROJECT)
